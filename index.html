@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Criador de Banda Desenhada</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { display: flex; flex-direction: column; height: 100vh; background-color: #f0f2f5; }
+        
+        /* Barra de Ferramentas */
+        #toolbar { display: flex; flex-wrap: wrap; gap: 10px; padding: 10px; background-color: #ffffff; box-shadow: 0 2px 5px rgba(0,0,0,0.1); align-items: center; z-index: 10; }
+        .tool-group { display: flex; align-items: center; gap: 5px; border-right: 2px solid #e4e6eb; padding-right: 10px; }
+        .tool-group:last-child { border-right: none; }
+        label { font-size: 12px; font-weight: bold; color: #4b4f56; }
+        button, input, select { padding: 6px 12px; border: 1px solid #ccd0d5; border-radius: 4px; background: #f5f6f7; cursor: pointer; font-size: 14px; }
+        button:hover { background: #ebedf0; }
+        button.active { background: #1877f2; color: white; border-color: #1877f2; }
+        input[type="color"] { padding: 0; width: 40px; height: 32px; border: none; }
+        
+        /* Área de Desenho */
+        #canvas-container { flex: 1; display: flex; justify-content: center; align-items: center; padding: 20px; overflow: auto; position: relative; }
+        canvas { background: white; border: 2px solid #ccc; box-shadow: 0 4px 10px rgba(0,0,0,0.05); cursor: crosshair; }
+        
+        /* Input flutuante para texto */
+        #text-input-overlay { position: absolute; display: none; background: transparent; border: 1px dashed #1877f2; outline: none; padding: 2px; font-weight: bold; resize: both; overflow: hidden; }
+    </style>
+</head>
+<body>
+
+    <div id="toolbar">
+        <!-- Ações de Ficheiro -->
+        <div class="tool-group">
+            <button onclick="downloadCanvas()">📥 Descarregar PNG</button>
+            <button onclick="saveToBrowser()">💾 Guardar Local</button>
+            <button onclick="loadFromBrowser()">📂 Carregar Local</button>
+            <input type="file" id="upload-file" accept="image/*" style="display: none;" onchange="uploadImage(event)">
+            <button onclick="document.getElementById('upload-file').click()">🖼️ Abrir Ficheiro</button>
+            <button onclick="clearCanvas()" style="background: #f02849; color: white;">🗑️ Limpar</button>
+        </div>
+
+        <!-- Modos de Ferramenta -->
+        <div class="tool-group">
+            <button id="btn-draw" class="active" onclick="setMode('draw')">✏️ Desenhar</button>
+            <button id="btn-text" onclick="setMode('text')">🔤 Texto</button>
+        </div>
+
+        <!-- Customização de Desenho -->
+        <div id="draw-options" class="tool-group">
+            <label>Cor:</label>
+            <input type="color" id="color-picker" value="#000000">
+            <label>Tamanho:</label>
+            <input type="range" id="brush-size" min="1" max="50" value="5">
+        </div>
+
+        <!-- Customização de Texto -->
+        <div id="text-options" class="tool-group" style="display: none;">
+            <label>Tipo de Letra:</label>
+            <select id="font-family">
+                <option value="Impact">Impact (Estilo BD)</option>
+                <option value="Comic Sans MS">Comic Sans</option>
+                <option value="Arial">Arial</option>
+                <option value="Courier New">Courier</option>
+            </select>
+            <label>Tamanho:</label>
+            <input type="number" id="font-size" value="30" min="10" max="100" style="width: 70px;">
+        </div>
+    </div>
+
+    <div id="canvas-container">
+        <canvas id="paintCanvas" width="800" height="600"></canvas>
+        <textarea id="text-input-overlay"></textarea>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('paintCanvas');
+        const ctx = canvas.getContext('2d');
+        const colorPicker = document.getElementById('color-picker');
+        const brushSize = document.getElementById('brush-size');
+        const textOverlay = document.getElementById('text-input-overlay');
+        const fontFamily = document.getElementById('font-family');
+        const fontSize = document.getElementById('font-size');
+
+        let isDrawing = false;
+        let currentMode = 'draw'; // 'draw' ou 'text'
+        let textX = 0;
+        let textY = 0;
+
+        // Inicializar fundo branco no canvas para não ficar transparente ao descarregar
+        ctx.fillStyle = 'white';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // Detetar Eventos do Rato e Toque (Telemóvel)
+        canvas.addEventListener('mousedown', startAction);
+        canvas.addEventListener('mousemove', executeAction);
+        window.addEventListener('mouseup', stopAction);
+
+        canvas.addEventListener('touchstart', (e) => { startAction(e.touches[0]); e.preventDefault(); });
+        canvas.addEventListener('touchmove', (e) => { executeAction(e.touches[0]); e.preventDefault(); });
+        window.addEventListener('touchend', stopAction);
+
+        function setMode(mode) {
+            currentMode = mode;
+            document.getElementById('btn-draw').classList.toggle('active', mode === 'draw');
+            document.getElementById('btn-text').classList.toggle('active', mode === 'text');
+            document.getElementById('draw-options').style.display = mode === 'draw' ? 'flex' : 'none';
+            document.getElementById('text-options').style.display = mode === 'text' ? 'flex' : 'none';
+            textOverlay.style.display = 'none';
+        }
+
+        function getMousePos(e) {
+            const rect = canvas.getBoundingClientRect();
+            // Suporta coordenadas reais considerando zoom/escala da tela
+            return {
+                x: (e.clientX - rect.left) * (canvas.width / rect.width),
+                y: (e.clientY - rect.top) * (canvas.height / rect.height)
+            };
+        }
+
+        function startAction(e) {
+            const pos = getMousePos(e);
+            if (currentMode === 'draw') {
+                isDrawing = true;
+                ctx.beginPath();
+                ctx.moveTo(pos.x, pos.y);
+                draw(e);
+            } else if (currentMode === 'text') {
+                // Posicionar a caixa de texto flutuante
+                textX = pos.x;
+                textY = pos.y;
+                
+                const containerRect = canvas.parentElement.getBoundingClientRect();
+                const canvasRect = canvas.getBoundingClientRect();
+                
+                // Alinha o input invisível exatamente onde clicou
+                textOverlay.style.left = `${e.clientX - containerRect.left}px`;
+                textOverlay.style.top = `${e.clientY - containerRect.top}px`;
+                textOverlay.style.fontFamily = fontFamily.value;
+                textOverlay.style.fontSize = `${fontSize.value * (canvasRect.width / canvas.width)}px`;
+                textOverlay.style.color = colorPicker.value;
+                textOverlay.style.display = 'block';
+                textOverlay.value = '';
+                setTimeout(() => textOverlay.focus(), 50);
+            }
+        }
+
+        function executeAction(e) {
+            if (currentMode === 'draw') draw(e);
+        }
+
+        function draw(e) {
+            if (!isDrawing) return;
+            const pos = getMousePos(e);
+            
+            ctx.lineWidth = brushSize.value;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            ctx.strokeStyle = colorPicker.value;
+
+            ctx.lineTo(pos.x, pos.y);
+            ctx.stroke();
+        }
+
+        function stopAction() {
+            isDrawing = false;
+        }
+
+        // Escrever o texto no Canvas ao clicar fora ou dar Enter
+        textOverlay.addEventListener('blur', applyText);
+        textOverlay.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                textOverlay.blur();
+            }
+        });
+
+        function applyText() {
+            const text = textOverlay.value.trim();
+            if (text && currentMode === 'text') {
+                ctx.font = `bold ${fontSize.value}px ${fontFamily.value}`;
+                ctx.fillStyle = colorPicker.value;
+                ctx.textBaseline = 'top';
+                
+                // Suporte para múltiplas linhas
+                const lines = text.split('\n');
+                let currentY = textY;
+                lines.forEach(line => {
+                    ctx.fillText(line, textX, currentY);
+                    currentY += parseInt(fontSize.value) * 1.2;
+                });
+            }
+            textOverlay.style.display = 'none';
+        }
+
+        function clearCanvas() {
+            if (confirm("Tem a certeza de que quer limpar tudo?")) {
+                ctx.fillStyle = 'white';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+            }
+        }
+
+        /* --- SISTEMA DE FICHEIROS COMPLETOS --- */
+
+        // 1. DESCARREGAR (Guarda como imagem PNG no dispositivo)
+        function downloadCanvas() {
+            const link = document.createElement('a');
+            link.download = 'minha-banda-desenhada.png';
+            link.href = canvas.toDataURL('image/png');
+            link.click();
+        }
+
+        // 2. GUARDAR LOCAL (Guarda o progresso na memória interna do navegador)
+        function saveToBrowser() {
+            localStorage.setItem('savedCanvasBD', canvas.toDataURL());
+            alert('Progresso guardado com sucesso no navegador!');
+        }
+
+        // 3. CARREGAR LOCAL (Recupera o progresso guardado na memória do navegador)
+        function loadFromBrowser() {
+            const dataURL = localStorage.getItem('savedCanvasBD');
+            if (dataURL) {
+                const img = new Image();
+img.onload = function() {
+ctx.clearRect(0, 0, canvas.width, canvas.height);
+ctx.drawImage(img, 0, 0);
+};
+img.src = dataURL;
+} else {
+alert('Não há nenhum desenho guardado neste navegador.');
+}
+}
+// 4. ABRIR FICHEIRO (Carrega qualquer imagem PNG/JPG do seu dispositivo para continuar a pintar)
+function uploadImage(event) {
+const file = event.target.files[0];
+if (file) {
+const reader = new FileReader();
+reader.onload = function(e) {
+const img = new Image();
+img.onload = function() {
+ctx.clearRect(0, 0, canvas.width, canvas.height);
+ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+};
+img.src = e.target.result;
+};
+reader.readAsDataURL(file);
+}
+}
